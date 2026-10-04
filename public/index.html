@@ -46,6 +46,17 @@ h4{margin:14px 0 6px;font-size:14px}
 .hint{font-size:12px;color:#6b7885;margin-top:4px}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .low{color:var(--err);font-weight:600}
+.entry{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:#fbfcfd}
+.entry-head{display:flex;align-items:center;gap:10px;margin-bottom:6px;font-weight:600;font-size:13px}
+.entry.bad{border-color:#e2a7a2;background:#fdf7f6}
+.entry.ok{border-color:#a9d8ba}
+.entry .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.entry .grid3 input{width:100%}
+.issue{color:var(--err);font-size:12px;margin:3px 0 0}
+.tag.via{background:#e6f4ea;color:var(--ok)}
+.tag.bad{background:#fdecea;color:var(--err)}
+.tag.pend{background:#fff4d6;color:#9a6700}
+@media(max-width:800px){.entry .grid3{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -57,6 +68,7 @@ h4{margin:14px 0 6px;font-size:14px}
   <button data-tab="bottles" class="active">瓶子总览</button>
   <button data-tab="register">登记原始瓶</button>
   <button data-tab="operation">新建分装 / 混样</button>
+  <button data-tab="batch">批次分装 / 混样</button>
   <button data-tab="ops">操作记录与更正</button>
 </nav>
 <main>
@@ -107,6 +119,28 @@ h4{margin:14px 0 6px;font-size:14px}
   </div>
 </section>
 
+<!-- ============ 批次操作 ============ -->
+<section id="tab-batch" style="display:none">
+  <div class="card">
+    <h3>批次：连续分装 / 混样</h3>
+    <p class="hint">录入批次号与按顺序排列的多条操作，每条沿用操作号、目标瓶、操作时间、来源瓶与取用毫升数。
+      先“预演”查看逐条可行性与受影响瓶预计余量（不写数据），再凭返回的凭据“提交批次”（一个事务整批落库）。
+      批内可引用<b>前项</b>生成的瓶；同操作时间按录入顺序核算。</p>
+    <div class="grid2">
+      <div><label>批次号（同一批次号重复提交相同内容幂等返回）</label><input id="ba_id" type="text" placeholder="如 BATCH-20261004-01"></div>
+    </div>
+    <h4>批次条目（录入顺序即批内顺序，同时间按此顺序核算）</h4>
+    <div id="baEntries"></div>
+    <p>
+      <button class="btn secondary small" id="baAddEntry">+ 添加条目</button>
+      <button class="btn secondary" id="baPreview">预演（不写库）</button>
+      <button class="btn" id="baCommit" disabled>提交批次</button>
+    </p>
+    <p class="hint" id="baCredHint"></p>
+  </div>
+  <div class="card" id="baPreviewCard" style="display:none"></div>
+</section>
+
 <!-- ============ 操作记录与更正 ============ -->
 <section id="tab-ops" style="display:none">
   <div class="card">
@@ -140,8 +174,12 @@ function showMsg(type, text, details) {
   el.className = 'msg ' + type;
   let html = escapeHtml(text);
   if (Array.isArray(details) && details.length) {
-    html += '\n冲突明细：' + details.map(c =>
-      `操作 ${c.op_id} 从瓶 ${c.bottle} 需取 ${c.requested} mL，可用仅 ${c.available} mL`).join('；');
+    if (details[0] && details[0]._text) {
+      html += '\n问题明细：' + details.map(c => c._text).join('；');
+    } else {
+      html += '\n冲突明细：' + details.map(c =>
+        `操作 ${c.op_id} 从瓶 ${c.bottle} 需取 ${c.requested} mL，可用仅 ${c.available} mL`).join('；');
+    }
   }
   el.textContent = html;
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -353,8 +391,170 @@ function openCorrect(o) {
 
 $('corrCancel').addEventListener('click', () => { $('correctCard').style.display = 'none'; clearMsg(); });
 
+// ---------- 批次：连续分装 / 混样 ----------
+function addBatchEntry(container, data) {
+  const card = document.createElement('div');
+  card.className = 'entry';
+  card.innerHTML =
+    `<div class="entry-head"><span class="entry-idx"></span>
+       <button type="button" class="btn secondary small ba-add-src">+ 来源</button>
+       <button type="button" class="btn secondary small ba-del-entry">删除条目</button></div>
+     <div class="grid3">
+       <input type="text" class="ba-op" placeholder="操作号 如 OP-1001">
+       <input type="text" class="ba-target" list="bottleList" placeholder="目标瓶 如 MIX-101">
+       <input type="datetime-local" class="ba-time" step="60">
+     </div>
+     <div class="ba-srcs" style="margin-top:8px"></div>`;
+  container.appendChild(card);
+  card.querySelector('.ba-del-entry').addEventListener('click', () => { card.remove(); renumberEntries(); batchDirty(); });
+  card.querySelector('.ba-add-src').addEventListener('click', () => addSourceRow(card.querySelector('.ba-srcs')));
+  card.querySelectorAll('input').forEach(inp => inp.addEventListener('input', batchDirty));
+  // 动态增删来源行、以及来源行内的输入变化都标记脏
+  const srcBox = card.querySelector('.ba-srcs');
+  srcBox.addEventListener('input', batchDirty);
+  const obs = new MutationObserver(batchDirty);
+  obs.observe(srcBox, { childList: true, subtree: true });
+  if (data && Array.isArray(data.sources)) data.sources.forEach(s => addSourceRow(srcBox, s.bottle, s.volume));
+  else addSourceRow(srcBox);
+  if (data) {
+    card.querySelector('.ba-op').value = data.op_id || '';
+    card.querySelector('.ba-target').value = data.target_bottle || '';
+    card.querySelector('.ba-time').value = data.op_time || '';
+  }
+  renumberEntries();
+}
+
+function renumberEntries() {
+  [...document.querySelectorAll('#baEntries .entry')].forEach((c, i) => {
+    c.querySelector('.entry-idx').textContent = `第 ${i + 1} 条`;
+  });
+}
+
+function readBatchEntries() {
+  return [...document.querySelectorAll('#baEntries .entry')].map(card => ({
+    op_id: card.querySelector('.ba-op').value,
+    target_bottle: card.querySelector('.ba-target').value,
+    op_time: card.querySelector('.ba-time').value,
+    sources: readSourceRows(card.querySelector('.ba-srcs')),
+  }));
+}
+
+let lastPreview = null; // { batch_id, operations, credential }
+
+function batchDirty() {
+  if (!lastPreview) return;
+  lastPreview = null;
+  $('baCommit').disabled = true;
+  $('baCredHint').textContent = '批次内容已修改，凭据已失效，请重新预演。';
+}
+
+$('baAddEntry').addEventListener('click', () => {
+  addBatchEntry($('baEntries'));
+  batchDirty();
+});
+$('ba_id').addEventListener('input', batchDirty);
+
+$('baPreview').addEventListener('click', async () => {
+  clearMsg();
+  $('baPreview').disabled = true;
+  try {
+    const body = { batch_id: $('ba_id').value, operations: readBatchEntries() };
+    const r = await api('/api/batches/preview', 'POST', body);
+    lastPreview = { batch_id: r.batch_id, operations: body.operations, credential: r.credential };
+    renderBatchPreview(r);
+    $('baCommit').disabled = !r.viable;
+    $('baCredHint').textContent = r.viable
+      ? `预演通过，凭据有效期至 ${r.credential.expires_at.replace('T', ' ').slice(0, 19)}；提交前若台账变化，需重新预演。`
+      : '预演未通过：修正条目后重新预演。';
+  } catch (e) {
+    lastPreview = null;
+    $('baCommit').disabled = true;
+    $('baPreviewCard').style.display = 'none';
+    $('baCredHint').textContent = '';
+    showMsg('err', e.message, e.details);
+  } finally {
+    $('baPreview').disabled = false;
+  }
+});
+
+$('baCommit').addEventListener('click', async () => {
+  if (!lastPreview) { showMsg('err', '请先预演'); return; }
+  clearMsg();
+  $('baCommit').disabled = true;
+  try {
+    const r = await api('/api/batches/commit', 'POST', {
+      batch_id: lastPreview.batch_id,
+      operations: lastPreview.operations,
+      credential: lastPreview.credential,
+    });
+    showMsg('ok', r.message + (r.idempotent ? '（幂等）' : ''));
+    if (!r.idempotent) {
+      $('baEntries').innerHTML = '';
+      $('ba_id').value = '';
+      $('baPreviewCard').style.display = 'none';
+      addBatchEntry($('baEntries'));
+      lastPreview = null;
+    }
+    loadBottles();
+    $('baCredHint').textContent = '';
+  } catch (e) {
+    showMsg('err', e.message, Array.isArray(e.details) ? batchDetailsToConflicts(e.details) : e.details);
+    if (['LEDGER_CHANGED', 'STALE_PREVIEW', 'BATCH_CONFLICT', 'BATCH_REJECTED'].includes(e.code)) {
+      lastPreview = null;
+      $('baCommit').disabled = true;
+      $('baCredHint').textContent = '凭据已失效，请重新预演。';
+    }
+  } finally {
+    $('baCommit').disabled = $('baCommit').disabled || !lastPreview;
+  }
+});
+
+function batchDetailsToConflicts(entries) {
+  // BATCH_REJECTED 的 details 为条目数组（含 issues），转成通用冲突文本展示
+  const out = [];
+  for (const en of entries) {
+    for (const is of en.issues) out.push({ op_id: en.op_id || `第${en.index}条`, bottle: is.bottle || '-', requested: is.requested || '', available: is.available != null ? is.available : '-', _text: is.message });
+  }
+  return out;
+}
+
+function renderBatchPreview(r) {
+  const el = $('baPreviewCard');
+  el.style.display = '';
+  let html = `<h3>批次 <span class="mono">${escapeHtml(r.batch_id)}</span> 预演结果
+      <span class="tag ${r.viable ? 'via' : 'bad'}">${r.viable ? '全部可行' : `存在 ${r.issue_count} 个问题`}</span></h3>
+    <table><thead><tr><th>#</th><th>操作号</th><th>操作时间</th><th>目标瓶</th><th>来源（瓶 × mL）</th><th class="num">目标体积</th><th>逐条可行性</th></tr></thead><tbody>`;
+  for (const e of r.entries) {
+    const srcs = e.sources.length
+      ? e.sources.map(s => `<span class="mono">${escapeHtml(s.bottle)}</span> × ${s.volume}`).join('<br>')
+      : '<span class="low">（缺失/非法）</span>';
+    const verdict = e.viable
+      ? '<span class="tag via">可行</span>'
+      : '<span class="tag bad">不可行</span><ul style="margin:4px 0 0;padding-left:16px">' +
+        e.issues.map(i => `<li class="issue">${escapeHtml(i.code)}：${escapeHtml(i.message)}</li>`).join('') + '</ul>';
+    html += `<tr><td>${e.index}</td><td class="mono">${escapeHtml(e.op_id || '—')}</td>
+      <td>${escapeHtml(e.op_time || '—')}</td><td class="mono">${escapeHtml(e.target_bottle || '—')}</td>
+      <td>${srcs}</td><td class="num">${e.total || '—'}</td><td>${verdict}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  html += `<h4>受影响瓶的预计余量（预演不落库）</h4>
+    <table><thead><tr><th>瓶编号</th><th>类型</th><th class="num">当前余量 (mL)</th><th class="num">预计余量 (mL)</th></tr></thead><tbody>`;
+  for (const a of r.affected_bottles) {
+    const cur = a.current_remaining === null ? '（批内新瓶）' : a.current_remaining;
+    const kind = a.kind === 'original' ? '<span class="tag original">原始瓶</span>' : '<span class="tag derived">衍生瓶</span>';
+    html += `<tr><td class="mono">${escapeHtml(a.bottle)}</td><td>${kind}</td>
+      <td class="num">${cur}</td><td class="num ${a.projected_remaining === 0 ? 'low' : ''}">${a.projected_remaining}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  html += `<p class="hint">凭据：<span class="mono">${r.credential.plan_digest.slice(0, 12)}… / ${r.credential.ledger_digest.slice(0, 12)}…</span>，` +
+    `有效期至 ${escapeHtml(r.credential.expires_at)}。提交时须原样回传批次内容与凭据；计划或台账变化将被拒绝。</p>`;
+  el.innerHTML = html;
+  el.scrollIntoView({ behavior: 'smooth' });
+}
+
 // ---------- 启动 ----------
 addSourceRow($('opSources'));
+addBatchEntry($('baEntries'));
 loadBottles();
 </script>
 </body>
