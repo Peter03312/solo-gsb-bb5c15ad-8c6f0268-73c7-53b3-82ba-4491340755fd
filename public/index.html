@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>水质实验室 · 样本分装与混样溯源工作台</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--line:#dfe5ea;--pri:#0b6fa4;--pri-d:#085a86;--err:#b3261e;--ok:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:#1c2530}
+header{background:linear-gradient(135deg,#0b6fa4,#0a4d73);color:#fff;padding:14px 24px}
+header h1{font-size:18px;margin:0}
+header p{margin:4px 0 0;font-size:12px;opacity:.85}
+nav{display:flex;gap:8px;padding:10px 24px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
+nav button{border:1px solid var(--line);background:#fff;padding:7px 14px;border-radius:6px;cursor:pointer;font-size:14px}
+nav button.active{background:var(--pri);color:#fff;border-color:var(--pri)}
+main{padding:20px 24px;max-width:1100px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:#f0f4f7;white-space:nowrap}
+tr.clickable{cursor:pointer}
+tr.clickable:hover{background:#f3f8fb}
+input{padding:7px 9px;border:1px solid #c7d0d8;border-radius:6px;font-size:14px}
+label{font-size:13px;color:#44515d;display:block;margin:10px 0 4px}
+.btn{background:var(--pri);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px}
+.btn:hover{background:var(--pri-d)}
+.btn.secondary{background:#fff;color:var(--pri);border:1px solid var(--pri)}
+.btn.small{padding:4px 10px;font-size:13px}
+.msg{padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:14px;display:none;white-space:pre-wrap}
+.msg.ok{display:block;background:#e6f4ea;color:var(--ok);border:1px solid #b7e2c4}
+.msg.err{display:block;background:#fdecea;color:var(--err);border:1px solid #f5c6c2}
+.src-row{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.src-row input[type=text]{flex:2}
+.src-row input[type=number]{flex:1;min-width:90px}
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;white-space:nowrap}
+.tag.original{background:#e3f0fb;color:#0b6fa4}
+.tag.derived{background:#efe6fb;color:#6a3fb5}
+ul.tree{list-style:none;padding-left:18px;border-left:1px dashed #b9c6d0;margin:6px 0}
+ul.tree>li{margin:4px 0}
+.mono{font-family:ui-monospace,Consolas,monospace}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}
+@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+h3{margin:0 0 10px;font-size:16px}
+h4{margin:14px 0 6px;font-size:14px}
+.hint{font-size:12px;color:#6b7885;margin-top:4px}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.low{color:var(--err);font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <h1>水质实验室 · 样本分装与混样溯源工作台</h1>
+  <p>原瓶登记 / 分装混样 / 余量守恒 / 谱系溯源 / 历史更正（冲突自动回滚）</p>
+</header>
+<nav>
+  <button data-tab="bottles" class="active">瓶子总览</button>
+  <button data-tab="register">登记原始瓶</button>
+  <button data-tab="operation">新建分装 / 混样</button>
+  <button data-tab="ops">操作记录与更正</button>
+</nav>
+<main>
+<div id="msg" class="msg"></div>
+
+<!-- ============ 瓶子总览 ============ -->
+<section id="tab-bottles">
+  <div class="card">
+    <h3>瓶子总览（当前余量）</h3>
+    <table id="bottleTable">
+      <thead><tr><th>瓶编号</th><th>类型</th><th>创建/采样时间</th><th class="num">初始体积 (mL)</th><th class="num">当前余量 (mL)</th><th>来源操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="hint">点击任意行查看该瓶的完整来源谱系与相关操作。</p>
+  </div>
+  <div class="card" id="bottleDetail" style="display:none"></div>
+</section>
+
+<!-- ============ 登记原始瓶 ============ -->
+<section id="tab-register" style="display:none">
+  <div class="card">
+    <h3>登记原始瓶</h3>
+    <div class="grid2">
+      <div><label>瓶编号（唯一）</label><input id="reg_id" type="text" placeholder="如 W2026-004"></div>
+      <div><label>采样时间</label><input id="reg_time" type="datetime-local" step="60"></div>
+      <div><label>初始体积（mL，正整数）</label><input id="reg_vol" type="number" min="1" step="1" placeholder="如 500"></div>
+    </div>
+    <p><button class="btn" id="regSubmit">登记</button></p>
+  </div>
+</section>
+
+<!-- ============ 新建操作 ============ -->
+<section id="tab-operation" style="display:none">
+  <div class="card">
+    <h3>新建分装 / 混样操作</h3>
+    <div class="grid2">
+      <div><label>操作号（唯一，重复提交相同内容将幂等返回）</label><input id="op_id" type="text" placeholder="如 OP-0003"></div>
+      <div><label>目标瓶编号（须为新编号）</label><input id="op_target" type="text" placeholder="如 MIX-002"></div>
+      <div><label>操作时间（不得早于任一来源瓶的创建时间）</label><input id="op_time" type="datetime-local" step="60"></div>
+    </div>
+    <h4>来源瓶与取用体积（mL，正整数；同一操作内来源不得重复）</h4>
+    <div id="opSources"></div>
+    <p>
+      <button class="btn secondary small" id="opAddRow">+ 添加来源行</button>
+      <button class="btn" id="opSubmit">提交操作</button>
+    </p>
+    <p class="hint">目标瓶体积 = 各来源取用量之和；任一时刻任一来源瓶超用，整次操作将被拒绝。</p>
+  </div>
+</section>
+
+<!-- ============ 操作记录与更正 ============ -->
+<section id="tab-ops" style="display:none">
+  <div class="card">
+    <h3>操作记录</h3>
+    <table id="opTable">
+      <thead><tr><th>操作号</th><th>操作时间</th><th>目标瓶</th><th>来源（瓶 × 体积）</th><th class="num">目标体积 (mL)</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="card" id="correctCard" style="display:none">
+    <h3>更正操作取用量：<span id="corr_op" class="mono"></span></h3>
+    <p class="hint">仅可修改来源瓶与取用量；提交后按操作顺序重算相关瓶余量。若导致后续操作超用，整次更正拒绝并回滚，原数据保持不变。</p>
+    <div id="corrSources"></div>
+    <p>
+      <button class="btn secondary small" id="corrAddRow">+ 添加来源行</button>
+      <button class="btn" id="corrSubmit">提交更正</button>
+      <button class="btn secondary" id="corrCancel">取消</button>
+    </p>
+  </div>
+</section>
+</main>
+
+<datalist id="bottleList"></datalist>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// ---------- 消息 ----------
+function showMsg(type, text, details) {
+  const el = $('msg');
+  el.className = 'msg ' + type;
+  let html = escapeHtml(text);
+  if (Array.isArray(details) && details.length) {
+    html += '\n冲突明细：' + details.map(c =>
+      `操作 ${c.op_id} 从瓶 ${c.bottle} 需取 ${c.requested} mL，可用仅 ${c.available} mL`).join('；');
+  }
+  el.textContent = html;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function clearMsg() { const el = $('msg'); el.className = 'msg'; el.textContent = ''; }
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ---------- API ----------
+async function api(path, method, body) {
+  const r = await fetch(path, {
+    method: method || 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw (j.error || { message: '请求失败（HTTP ' + r.status + '）' });
+  return j;
+}
+
+// ---------- 页签 ----------
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('main > section').forEach(s => s.style.display = 'none');
+    $('tab-' + btn.dataset.tab).style.display = '';
+    clearMsg();
+    if (btn.dataset.tab === 'bottles') loadBottles();
+    if (btn.dataset.tab === 'ops') loadOps();
+  });
+});
+
+// ---------- 瓶子总览 ----------
+async function loadBottles() {
+  const rows = await api('/api/bottles');
+  const tb = document.querySelector('#bottleTable tbody');
+  tb.innerHTML = '';
+  const dl = $('bottleList');
+  dl.innerHTML = '';
+  for (const b of rows) {
+    const tr = document.createElement('tr');
+    tr.className = 'clickable';
+    tr.innerHTML =
+      `<td class="mono">${escapeHtml(b.id)}</td>` +
+      `<td><span class="tag ${b.kind}">${b.kind === 'original' ? '原始瓶' : '衍生瓶'}</span></td>` +
+      `<td>${escapeHtml(b.created_time)}</td>` +
+      `<td class="num">${b.kind === 'original' ? b.initial_volume : '—'}</td>` +
+      `<td class="num ${b.remaining === 0 ? 'low' : ''}">${b.remaining}</td>` +
+      `<td class="mono">${escapeHtml(b.created_op || '—')}</td>`;
+    tr.addEventListener('click', () => showBottle(b.id));
+    tb.appendChild(tr);
+    const opt = document.createElement('option');
+    opt.value = b.id;
+    opt.label = `余量 ${b.remaining} mL`;
+    dl.appendChild(opt);
+  }
+}
+
+async function showBottle(id) {
+  try {
+    const b = await api('/api/bottles/' + encodeURIComponent(id));
+    const el = $('bottleDetail');
+    el.style.display = '';
+    let html = `<h3>瓶 <span class="mono">${escapeHtml(b.id)}</span> 详情</h3>
+      <p>类型：<span class="tag ${b.kind}">${b.kind === 'original' ? '原始瓶' : '衍生瓶'}</span>
+      创建/采样时间：${escapeHtml(b.created_time)}
+      ${b.kind === 'original' ? '初始体积：' + b.initial_volume + ' mL　' : ''}
+      <b>当前余量：${b.remaining} mL</b></p>
+      <h4>来源谱系（向上追溯至原始瓶）</h4>${renderLineage(b.lineage)}
+      <h4>相关操作</h4>`;
+    if (b.operations.as_target.length) {
+      html += '<p>由以下操作生成：</p><ul>' + b.operations.as_target.map(o =>
+        `<li class="mono">${escapeHtml(o.op_id)}（${escapeHtml(o.op_time)}）</li>`).join('') + '</ul>';
+    }
+    if (b.operations.as_source.length) {
+      html += '<p>作为来源被取用：</p><ul>' + b.operations.as_source.map(o =>
+        `<li class="mono">${escapeHtml(o.op_id)}（${escapeHtml(o.op_time)}）取用 ${o.drawn_volume} mL → ${escapeHtml(o.target_bottle)}</li>`).join('') + '</ul>';
+    }
+    if (!b.operations.as_target.length && !b.operations.as_source.length) html += '<p>暂无相关操作。</p>';
+    el.innerHTML = html;
+  } catch (e) {
+    showMsg('err', e.message, e.details);
+  }
+}
+
+function renderLineage(node) {
+  if (!node) return '';
+  if (node.original) {
+    return `<ul class="tree"><li>💧 <span class="mono">${escapeHtml(node.bottle)}</span>（原始瓶）</li></ul>`;
+  }
+  const children = (node.sources || []).map(s =>
+    `<li>← 取用 ${s.volume} mL ${renderLineage(s.node)}</li>`).join('');
+  const head = node.op
+    ? `<ul class="tree"><li>🧪 <span class="mono">${escapeHtml(node.bottle)}</span>（由操作 <span class="mono">${escapeHtml(node.op.op_id)}</span> 于 ${escapeHtml(node.op.op_time)} 生成）<ul class="tree">${children}</ul></li></ul>`
+    : `<ul class="tree"><li class="mono">${escapeHtml(node.bottle)}</li></ul>`;
+  return head;
+}
+
+// ---------- 登记原始瓶 ----------
+$('regSubmit').addEventListener('click', async () => {
+  clearMsg();
+  $('regSubmit').disabled = true;
+  try {
+    const r = await api('/api/bottles', 'POST', {
+      bottle_id: $('reg_id').value,
+      sample_time: $('reg_time').value,
+      initial_volume: $('reg_vol').value,
+    });
+    showMsg('ok', r.message);
+    $('reg_id').value = ''; $('reg_vol').value = '';
+    loadBottles();
+  } catch (e) {
+    showMsg('err', e.message, e.details);
+  } finally {
+    $('regSubmit').disabled = false;
+  }
+});
+
+// ---------- 来源行动态控件 ----------
+function addSourceRow(container, bottle, volume) {
+  const row = document.createElement('div');
+  row.className = 'src-row';
+  row.innerHTML =
+    `<input type="text" list="bottleList" placeholder="来源瓶编号" value="${bottle ? escapeHtml(bottle) : ''}">` +
+    `<input type="number" min="1" step="1" placeholder="体积 mL" value="${volume || ''}">` +
+    `<button type="button" class="btn secondary small">删除</button>`;
+  row.querySelector('button').addEventListener('click', () => row.remove());
+  container.appendChild(row);
+}
+
+function readSourceRows(container) {
+  return [...container.querySelectorAll('.src-row')].map(row => {
+    const [b, v] = row.querySelectorAll('input');
+    return { bottle: b.value, volume: v.value };
+  });
+}
+
+$('opAddRow').addEventListener('click', () => addSourceRow($('opSources')));
+$('corrAddRow').addEventListener('click', () => addSourceRow($('corrSources')));
+
+// ---------- 新建操作 ----------
+$('opSubmit').addEventListener('click', async () => {
+  clearMsg();
+  $('opSubmit').disabled = true;
+  try {
+    const r = await api('/api/operations', 'POST', {
+      op_id: $('op_id').value,
+      target_bottle: $('op_target').value,
+      op_time: $('op_time').value,
+      sources: readSourceRows($('opSources')),
+    });
+    showMsg('ok', r.message + (r.idempotent ? '（幂等）' : ''));
+    if (!r.idempotent) {
+      $('op_id').value = ''; $('op_target').value = '';
+      $('opSources').innerHTML = ''; addSourceRow($('opSources'));
+    }
+    loadBottles();
+  } catch (e) {
+    showMsg('err', e.message, e.details);
+  } finally {
+    $('opSubmit').disabled = false;
+  }
+});
+
+// ---------- 操作记录与更正 ----------
+async function loadOps() {
+  const rows = await api('/api/operations');
+  const tb = document.querySelector('#opTable tbody');
+  tb.innerHTML = '';
+  for (const o of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      `<td class="mono">${escapeHtml(o.op_id)}</td>` +
+      `<td>${escapeHtml(o.op_time)}</td>` +
+      `<td class="mono">${escapeHtml(o.target_bottle)}</td>` +
+      `<td>${o.sources.map(s => `<span class="mono">${escapeHtml(s.bottle)}</span> × ${s.volume} mL`).join('<br>')}</td>` +
+      `<td class="num">${o.total}</td>` +
+      `<td><button class="btn secondary small">更正</button></td>`;
+    tr.querySelector('button').addEventListener('click', () => openCorrect(o));
+    tb.appendChild(tr);
+  }
+}
+
+function openCorrect(o) {
+  clearMsg();
+  $('corr_op').textContent = o.op_id;
+  const box = $('corrSources');
+  box.innerHTML = '';
+  for (const s of o.sources) addSourceRow(box, s.bottle, s.volume);
+  $('correctCard').style.display = '';
+  $('correctCard').scrollIntoView({ behavior: 'smooth' });
+  $('corrSubmit').onclick = async () => {
+    clearMsg();
+    $('corrSubmit').disabled = true;
+    try {
+      const r = await api('/api/operations/' + encodeURIComponent(o.op_id) + '/correct', 'POST', {
+        sources: readSourceRows(box),
+      });
+      showMsg('ok', r.message);
+      $('correctCard').style.display = 'none';
+      loadOps(); loadBottles();
+    } catch (e) {
+      showMsg('err', e.message, e.details);
+    } finally {
+      $('corrSubmit').disabled = false;
+    }
+  };
+}
+
+$('corrCancel').addEventListener('click', () => { $('correctCard').style.display = 'none'; clearMsg(); });
+
+// ---------- 启动 ----------
+addSourceRow($('opSources'));
+loadBottles();
+</script>
+</body>
+</html>

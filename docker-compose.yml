@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    container_name: water-lab-traceability
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DB_PATH=/app/data/lab.db
+    volumes:
+      - lab-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  lab-data:
