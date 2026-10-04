@@ -46,17 +46,22 @@ h4{margin:14px 0 6px;font-size:14px}
 .hint{font-size:12px;color:#6b7885;margin-top:4px}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .low{color:var(--err);font-weight:600}
+.batch-item{border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:12px;background:#fbfcfd}
+.batch-item>.head{display:flex;justify-content:space-between;align-items:center;margin-bottom:2px}
+.batch-item>.head b{font-size:13px;color:#44515d}
+.ok-text{color:var(--ok);font-weight:600}
 </style>
 </head>
 <body>
 <header>
   <h1>水质实验室 · 样本分装与混样溯源工作台</h1>
-  <p>原瓶登记 / 分装混样 / 余量守恒 / 谱系溯源 / 历史更正（冲突自动回滚）</p>
+  <p>原瓶登记 / 分装混样 / 批次预演与提交 / 余量守恒 / 谱系溯源 / 历史更正（冲突自动回滚）</p>
 </header>
 <nav>
   <button data-tab="bottles" class="active">瓶子总览</button>
   <button data-tab="register">登记原始瓶</button>
   <button data-tab="operation">新建分装 / 混样</button>
+  <button data-tab="batch">批量预演 / 提交</button>
   <button data-tab="ops">操作记录与更正</button>
 </nav>
 <main>
@@ -107,12 +112,32 @@ h4{margin:14px 0 6px;font-size:14px}
   </div>
 </section>
 
+<!-- ============ 批量预演 / 提交 ============ -->
+<section id="tab-batch" style="display:none">
+  <div class="card">
+    <h3>批次预演与提交（连续分装 / 混样作为一个批次）</h3>
+    <div class="grid2">
+      <div><label>批次号（唯一；已成功提交的相同内容重复请求将幂等返回）</label><input id="batch_id" type="text" placeholder="如 BATCH-0001"></div>
+    </div>
+    <h4>批次条目（按录入顺序排列；同一操作时间时按此顺序核算；可引用前项生成的瓶）</h4>
+    <div id="batchItems"></div>
+    <p>
+      <button class="btn secondary small" id="batchAddItem">+ 添加条目</button>
+      <button class="btn" id="batchPreview">预演</button>
+      <button class="btn" id="batchCommit" style="display:none">提交批次</button>
+    </p>
+    <p class="hint">预演不写入数据，返回逐条可行性、受影响瓶预计余量与提交凭据；凭据绑定本次计划与当前台账，
+      预演后若有新登记 / 操作 / 更正 / 批次提交，需重新预演。提交在单个事务中完成：任一条目不合法，整批不落库。</p>
+  </div>
+  <div class="card" id="batchResult" style="display:none"></div>
+</section>
+
 <!-- ============ 操作记录与更正 ============ -->
 <section id="tab-ops" style="display:none">
   <div class="card">
     <h3>操作记录</h3>
     <table id="opTable">
-      <thead><tr><th>操作号</th><th>操作时间</th><th>目标瓶</th><th>来源（瓶 × 体积）</th><th class="num">目标体积 (mL)</th><th></th></tr></thead>
+      <thead><tr><th>操作号</th><th>操作时间</th><th>目标瓶</th><th>来源（瓶 × 体积）</th><th class="num">目标体积 (mL)</th><th>批次</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -140,8 +165,13 @@ function showMsg(type, text, details) {
   el.className = 'msg ' + type;
   let html = escapeHtml(text);
   if (Array.isArray(details) && details.length) {
-    html += '\n冲突明细：' + details.map(c =>
-      `操作 ${c.op_id} 从瓶 ${c.bottle} 需取 ${c.requested} mL，可用仅 ${c.available} mL`).join('；');
+    html += '\n' + details.map(c => {
+      if (c && Array.isArray(c.errors)) {
+        return `第 ${c.index + 1} 条（${c.op_id || '?'}）：` + c.errors.map(e => e.message).join('；');
+      }
+      const where = (c.index !== undefined && c.index !== null) ? `第 ${c.index + 1} 条 ` : '';
+      return `${where}操作 ${c.op_id} 从瓶 ${c.bottle} 需取 ${c.requested} mL，可用仅 ${c.available} mL`;
+    }).join('\n');
   }
   el.textContent = html;
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -319,6 +349,7 @@ async function loadOps() {
       `<td class="mono">${escapeHtml(o.target_bottle)}</td>` +
       `<td>${o.sources.map(s => `<span class="mono">${escapeHtml(s.bottle)}</span> × ${s.volume} mL`).join('<br>')}</td>` +
       `<td class="num">${o.total}</td>` +
+      `<td class="mono">${o.batch_id ? escapeHtml(o.batch_id) : '—'}</td>` +
       `<td><button class="btn secondary small">更正</button></td>`;
     tr.querySelector('button').addEventListener('click', () => openCorrect(o));
     tb.appendChild(tr);
@@ -353,8 +384,137 @@ function openCorrect(o) {
 
 $('corrCancel').addEventListener('click', () => { $('correctCard').style.display = 'none'; clearMsg(); });
 
+// ---------- 批次预演 / 提交 ----------
+let lastPreview = null; // { payloadJson, token }：提交内容必须与预演计划一致
+
+function addBatchItemCard() {
+  const box = $('batchItems');
+  const div = document.createElement('div');
+  div.className = 'batch-item';
+  div.innerHTML =
+    '<div class="head"><b>条目 <span class="bi-no"></span></b>' +
+    '<button type="button" class="btn secondary small bi-del">删除条目</button></div>' +
+    '<div class="grid2">' +
+    '<div><label>操作号（唯一）</label><input class="bi-op" type="text" placeholder="如 OP-0101"></div>' +
+    '<div><label>目标瓶编号（须为新编号）</label><input class="bi-target" type="text" placeholder="如 MIX-101"></div>' +
+    '<div><label>操作时间</label><input class="bi-time" type="datetime-local" step="60"></div>' +
+    '</div>' +
+    '<label>来源瓶与取用体积（mL，正整数；同一操作内来源不得重复）</label>' +
+    '<div class="bi-sources"></div>' +
+    '<p><button type="button" class="btn secondary small bi-addsrc">+ 添加来源行</button></p>';
+  div.querySelector('.bi-addsrc').addEventListener('click', () => addSourceRow(div.querySelector('.bi-sources')));
+  div.querySelector('.bi-del').addEventListener('click', () => { div.remove(); renumberBatchItems(); });
+  addSourceRow(div.querySelector('.bi-sources'));
+  box.appendChild(div);
+  renumberBatchItems();
+}
+
+function renumberBatchItems() {
+  [...$('batchItems').querySelectorAll('.batch-item')].forEach((d, i) => {
+    d.querySelector('.bi-no').textContent = i + 1;
+  });
+}
+
+function readBatchPayload() {
+  return {
+    batch_id: $('batch_id').value,
+    items: [...$('batchItems').querySelectorAll('.batch-item')].map(div => ({
+      op_id: div.querySelector('.bi-op').value,
+      target_bottle: div.querySelector('.bi-target').value,
+      op_time: div.querySelector('.bi-time').value,
+      sources: readSourceRows(div.querySelector('.bi-sources')),
+    })),
+  };
+}
+
+function renderBatchPreview(r) {
+  const el = $('batchResult');
+  el.style.display = '';
+  let html = `<h3>预演结果：${r.ok
+    ? '<span class="ok-text">✓ 通过，可提交</span>'
+    : '<span class="low">✗ 未通过（未写入任何数据）</span>'}</h3>`;
+  html += `<p>${escapeHtml(r.message)}</p>`;
+  if (r.errors && r.errors.length) {
+    html += '<p class="low">' + r.errors.map(e => escapeHtml(e.message)).join('<br>') + '</p>';
+  }
+  html += '<table><thead><tr><th>#</th><th>操作号</th><th>可行性</th><th>问题</th></tr></thead><tbody>';
+  for (const it of r.items) {
+    html += `<tr><td>${it.index + 1}</td><td class="mono">${escapeHtml(it.op_id || '—')}</td>` +
+      `<td>${it.ok ? '<span class="ok-text">✓ 可行</span>' : '<span class="low">✗ 不可行</span>'}</td>` +
+      `<td>${it.errors.length ? it.errors.map(e => escapeHtml(e.message)).join('<br>') : '—'}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  if (r.projected_balances && r.projected_balances.length) {
+    html += '<h4>受影响瓶预计余量（按 操作时间 + 录入顺序 重放）</h4>' +
+      '<table><thead><tr><th>瓶编号</th><th></th><th class="num">预计余量 (mL)</th></tr></thead><tbody>';
+    for (const b of r.projected_balances) {
+      html += `<tr><td class="mono">${escapeHtml(b.bottle)}</td>` +
+        `<td>${b.in_batch ? '<span class="tag derived">本批新建</span>' : ''}</td>` +
+        `<td class="num ${b.remaining === 0 ? 'low' : ''}">${b.remaining}</td></tr>`;
+    }
+    html += '</tbody></table>';
+  }
+  if (r.commit_token) {
+    html += `<p class="hint">提交凭据已签发（绑定本计划与台账版本 ${r.ledger_version}）：` +
+      `<span class="mono">${escapeHtml(r.commit_token.slice(0, 20))}…</span>　点击“提交批次”完成登记。</p>`;
+  }
+  el.innerHTML = html;
+  el.scrollIntoView({ behavior: 'smooth' });
+}
+
+$('batchAddItem').addEventListener('click', addBatchItemCard);
+
+$('batchPreview').addEventListener('click', async () => {
+  clearMsg();
+  $('batchPreview').disabled = true;
+  try {
+    const payload = readBatchPayload();
+    const r = await api('/api/batches/preview', 'POST', payload);
+    renderBatchPreview(r);
+    lastPreview = r.ok ? { payloadJson: JSON.stringify(payload), token: r.commit_token } : null;
+    $('batchCommit').style.display = r.ok ? '' : 'none';
+  } catch (e) {
+    lastPreview = null;
+    $('batchCommit').style.display = 'none';
+    showMsg('err', e.message, e.details);
+  } finally {
+    $('batchPreview').disabled = false;
+  }
+});
+
+$('batchCommit').addEventListener('click', async () => {
+  clearMsg();
+  if (!lastPreview) { showMsg('err', '请先预演'); return; }
+  const payload = readBatchPayload();
+  if (JSON.stringify(payload) !== lastPreview.payloadJson) {
+    showMsg('err', '表单内容在预演后已被修改，请重新预演');
+    $('batchCommit').style.display = 'none';
+    lastPreview = null;
+    return;
+  }
+  $('batchCommit').disabled = true;
+  try {
+    const r = await api('/api/batches/commit', 'POST', { ...payload, commit_token: lastPreview.token });
+    showMsg('ok', r.message + (r.idempotent ? '（幂等）' : ''));
+    $('batchCommit').style.display = 'none';
+    lastPreview = null;
+    $('batchItems').innerHTML = ''; addBatchItemCard();
+    $('batchResult').style.display = 'none';
+    loadBottles();
+  } catch (e) {
+    showMsg('err', e.message, e.details);
+    if (e.code === 'STALE_TOKEN' || e.code === 'PLAN_CHANGED' || e.code === 'BAD_TOKEN') {
+      $('batchCommit').style.display = 'none';
+      lastPreview = null;
+    }
+  } finally {
+    $('batchCommit').disabled = false;
+  }
+});
+
 // ---------- 启动 ----------
 addSourceRow($('opSources'));
+addBatchItemCard();
 loadBottles();
 </script>
 </body>
